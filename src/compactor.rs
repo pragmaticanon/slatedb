@@ -135,7 +135,10 @@ impl CompactorOrchestrator {
 
     fn run(&mut self) {
         let ticker = crossbeam_channel::tick(self.options.poll_interval);
-        loop {
+
+        // Stop the loop when the executor is shut down *and* all remaining
+        // `worker_rx` messages have been drained.
+        while !(self.executor.is_stopped() && self.worker_rx.is_empty()) {
             crossbeam_channel::select! {
                 recv(ticker) -> _ => {
                     self.load_manifest().expect("fatal error loading manifest");
@@ -148,7 +151,10 @@ impl CompactorOrchestrator {
                     }
                 }
                 recv(self.external_rx) -> _ => {
-                    return;
+                    // Stop the executor. Don't return because there might
+                    // still be messages in `worker_rx`. Let the loop continue
+                    // to drain them until empty.
+                    self.executor.stop();
                 }
             }
         }
@@ -324,8 +330,6 @@ mod tests {
         // write an l0
         let options = db_options(None);
         let rt = build_runtime();
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
         let (os, manifest_store, table_store, db) = rt.block_on(build_test_db(options.clone()));
         let mut stored_manifest = rt
             .block_on(StoredManifest::load(manifest_store.clone()))
@@ -349,6 +353,7 @@ mod tests {
             .iter()
             .map(|h| SourceId::Sst(h.id.unwrap_compacted_id()))
             .collect();
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         // write another l0
         let db = rt
             .block_on(Db::open_with_opts(
@@ -422,15 +427,17 @@ mod tests {
         Db,
     ) {
         let os: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
-        let db = Db::open_with_opts(Path::from(PATH), options.clone(), os.clone(), block_cache)
-            .await
-            .unwrap();
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
+        let db = Db::open_with_opts(
+            Path::from(PATH),
+            options.clone(),
+            os.clone(),
+            block_cache.clone(),
+        )
+        .await
+        .unwrap();
         let sst_format = SsTableFormat::new(32, 10, options.compression_codec);
         let manifest_store = Arc::new(ManifestStore::new(&Path::from(PATH), os.clone()));
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
         let table_store = Arc::new(TableStore::new(
             os.clone(),
             sst_format,
