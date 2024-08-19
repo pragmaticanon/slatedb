@@ -1,4 +1,3 @@
-use crate::compactor_executor::{CompactionExecutor, CompactionJob, TokioCompactionExecutor};
 use crate::config::DEFAULT_COMPACTOR_OPTIONS;
 use crate::db_state::{SSTableHandle, SsTableId};
 use crate::error::SlateDBError;
@@ -6,6 +5,10 @@ use crate::sst::SsTableFormat;
 use crate::tablestore::TableStore;
 use crate::test_utils::OrderedBytesGenerator;
 use crate::{compactor::WorkerToOrchestoratorMsg, config::CompressionCodec};
+use crate::{
+    compactor_executor::{CompactionExecutor, CompactionJob, TokioCompactionExecutor},
+    tablestore::BlockCache,
+};
 use bytes::BufMut;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -59,10 +62,12 @@ pub fn run_compaction_execute_bench(c: Option<CompressionCodec>) -> Result<(), S
     let options = load_options();
     let s3 = open_object_store(&options)?;
     let sst_format = SsTableFormat::new(4096, 1, c);
+    let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
     let table_store = Arc::new(TableStore::new(
         s3.clone(),
         sst_format,
         Path::from(options.path.as_str()),
+        block_cache,
     ));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

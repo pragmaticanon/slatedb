@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::compactor::Compactor;
 use crate::config::ReadLevel::Uncommitted;
 use crate::config::{
     DbOptions, ReadOptions, WriteOptions, DEFAULT_READ_OPTIONS, DEFAULT_WRITE_OPTIONS,
@@ -16,6 +15,7 @@ use crate::sst::SsTableFormat;
 use crate::sst_iter::SstIterator;
 use crate::tablestore::TableStore;
 use crate::types::ValueDeletable;
+use crate::{compactor::Compactor, tablestore::BlockCache};
 use bytes::Bytes;
 use fail_parallel::FailPointRegistry;
 use object_store::path::Path;
@@ -217,20 +217,23 @@ impl Db {
     pub async fn open(
         path: Path,
         object_store: Arc<dyn ObjectStore>,
+        block_cache: Option<Arc<BlockCache>>,
     ) -> Result<Self, SlateDBError> {
-        Self::open_with_opts(path, DbOptions::default(), object_store).await
+        Self::open_with_opts(path, DbOptions::default(), object_store, block_cache).await
     }
 
     pub async fn open_with_opts(
         path: Path,
         options: DbOptions,
         object_store: Arc<dyn ObjectStore>,
+        block_cache: Option<Arc<BlockCache>>,
     ) -> Result<Self, SlateDBError> {
         Self::open_with_fp_registry(
             path,
             options,
             object_store,
             Arc::new(FailPointRegistry::new()),
+            block_cache,
         )
         .await
     }
@@ -240,6 +243,7 @@ impl Db {
         options: DbOptions,
         object_store: Arc<dyn ObjectStore>,
         fp_registry: Arc<FailPointRegistry>,
+        block_cache: Option<Arc<BlockCache>>,
     ) -> Result<Self, SlateDBError> {
         let sst_format =
             SsTableFormat::new(4096, options.min_filter_keys, options.compression_codec);
@@ -248,6 +252,7 @@ impl Db {
             sst_format,
             path.clone(),
             fp_registry.clone(),
+            block_cache,
         ));
         let manifest_store = Arc::new(ManifestStore::new(&path, object_store.clone()));
         let manifest = Self::init_db(&manifest_store).await?;
@@ -390,10 +395,13 @@ mod tests {
     #[tokio::test]
     async fn test_put_get_delete() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
             object_store,
+            block_cache,
         )
         .await
         .unwrap();
@@ -415,10 +423,13 @@ mod tests {
     async fn test_put_flushes_memtable() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 128, None),
             object_store.clone(),
+            block_cache.clone(),
         )
         .await
         .unwrap();
@@ -433,6 +444,7 @@ mod tests {
             object_store.clone(),
             sst_format,
             path.clone(),
+            block_cache,
         ));
 
         // Write data a few times such that each loop results in a memtable flush
@@ -474,10 +486,13 @@ mod tests {
     #[tokio::test]
     async fn test_put_empty_value() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
             object_store,
+            block_cache,
         )
         .await
         .unwrap();
@@ -495,10 +510,13 @@ mod tests {
     #[tokio::test]
     async fn test_flush_while_iterating() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
             object_store,
+            block_cache,
         )
         .await
         .unwrap();
@@ -528,10 +546,13 @@ mod tests {
     async fn test_basic_restore() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 128, None),
             object_store.clone(),
+            block_cache.clone(),
         )
         .await
         .unwrap();
@@ -561,6 +582,7 @@ mod tests {
             path.clone(),
             test_db_options(0, 128, None),
             object_store.clone(),
+            block_cache,
         )
         .await
         .unwrap();
@@ -588,10 +610,13 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
             object_store.clone(),
+            block_cache,
         )
         .await
         .unwrap();
@@ -625,10 +650,13 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
             object_store.clone(),
+            block_cache,
         )
         .await
         .unwrap();
@@ -665,10 +693,13 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
             object_store.clone(),
+            block_cache,
         )
         .await
         .unwrap();
@@ -699,6 +730,8 @@ mod tests {
     #[tokio::test]
     async fn test_should_recover_imm_from_wal() {
         let fp_registry = Arc::new(FailPointRegistry::new());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         fail_parallel::cfg(
             fp_registry.clone(),
             "write-compacted-sst-io-error",
@@ -713,6 +746,7 @@ mod tests {
             test_db_options(0, 128, None),
             object_store.clone(),
             fp_registry.clone(),
+            block_cache.clone(),
         )
         .await
         .unwrap();
@@ -732,6 +766,7 @@ mod tests {
             path.clone(),
             test_db_options(0, 128, None),
             object_store.clone(),
+            block_cache,
         )
         .await
         .unwrap();
@@ -758,7 +793,9 @@ mod tests {
     async fn do_test_should_read_compacted_db(options: DbOptions) {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let db = Db::open_with_opts(path.clone(), options, object_store.clone())
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
+        let db = Db::open_with_opts(path.clone(), options, object_store.clone(), block_cache)
             .await
             .unwrap();
         let ms = ManifestStore::new(&path, object_store.clone());

@@ -210,11 +210,11 @@ impl CompactorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compactor_state::CompactionStatus::Submitted;
     use crate::compactor_state::SourceId::Sst;
     use crate::db::Db;
     use crate::db_state::SsTableId;
     use crate::manifest_store::{ManifestStore, StoredManifest};
+    use crate::{compactor_state::CompactionStatus::Submitted, tablestore::BlockCache};
     use object_store::memory::InMemory;
     use object_store::path::Path;
     use object_store::ObjectStore;
@@ -312,8 +312,10 @@ mod tests {
         // given:
         let rt = build_runtime();
         let (os, mut sm, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         // open a new db and write another l0
-        let db = build_db(os.clone(), rt.handle());
+        let db = build_db(os.clone(), rt.handle(), block_cache);
         rt.block_on(db.put(&[b'a'; 16], &[b'b'; 48]));
         rt.block_on(db.put(&[b'j'; 16], &[b'k'; 48]));
         let writer_db_state =
@@ -343,6 +345,8 @@ mod tests {
         // given:
         let rt = build_runtime();
         let (os, mut sm, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         // compact the last sst
         let original_l0s = &state.db_state().clone().l0;
         state
@@ -356,7 +360,7 @@ mod tests {
             ssts: vec![original_l0s.back().unwrap().clone()],
         });
         // open a new db and write another l0
-        let db = build_db(os.clone(), rt.handle());
+        let db = build_db(os.clone(), rt.handle(), block_cache);
         rt.block_on(db.put(&[b'a'; 16], &[b'b'; 48]));
         rt.block_on(db.put(&[b'j'; 16], &[b'k'; 48]));
         let writer_db_state =
@@ -397,6 +401,8 @@ mod tests {
         // given:
         let rt = build_runtime();
         let (os, mut sm, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         // compact the last sst
         let original_l0s = &state.db_state().clone().l0;
         state
@@ -414,7 +420,7 @@ mod tests {
         });
         assert_eq!(state.db_state().l0.len(), 0);
         // open a new db and write another l0
-        let db = build_db(os.clone(), rt.handle());
+        let db = build_db(os.clone(), rt.handle(), block_cache);
         rt.block_on(db.put(&[b'a'; 16], &[b'b'; 48]));
         rt.block_on(db.put(&[b'j'; 16], &[b'k'; 48]));
         let writer_db_state =
@@ -500,9 +506,13 @@ mod tests {
         Compaction::new(sources, dst)
     }
 
-    fn build_db(os: Arc<dyn ObjectStore>, tokio_handle: &Handle) -> Db {
+    fn build_db(
+        os: Arc<dyn ObjectStore>,
+        tokio_handle: &Handle,
+        block_cache: Option<Arc<BlockCache>>,
+    ) -> Db {
         tokio_handle
-            .block_on(Db::open(Path::from(PATH), os))
+            .block_on(Db::open(Path::from(PATH), os, block_cache))
             .unwrap()
     }
 
@@ -510,7 +520,9 @@ mod tests {
         tokio_handle: &Handle,
     ) -> (Arc<dyn ObjectStore>, StoredManifest, CompactorState) {
         let os: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let db = build_db(os.clone(), tokio_handle);
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
+        let db = build_db(os.clone(), tokio_handle, block_cache);
         let l0_count: u64 = 5;
         for i in 0..l0_count {
             tokio_handle.block_on(db.put(&[b'a' + i as u8; 16], &[b'b' + i as u8; 48]));

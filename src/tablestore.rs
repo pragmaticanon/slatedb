@@ -16,6 +16,8 @@ use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
+pub type BlockCache = moka::future::Cache<(SsTableId, usize), Arc<Block>>;
+
 pub struct TableStore {
     object_store: Arc<dyn ObjectStore>,
     sst_format: SsTableFormat,
@@ -29,6 +31,7 @@ pub struct TableStore {
     //       the cache and get rid of this.
     //       https://github.com/slatedb/slatedb/issues/89
     filter_cache: RwLock<HashMap<SsTableId, Option<Arc<BloomFilter>>>>,
+    block_cache: Option<Arc<BlockCache>>,
 }
 
 struct ReadOnlyObject {
@@ -65,12 +68,14 @@ impl TableStore {
         object_store: Arc<dyn ObjectStore>,
         sst_format: SsTableFormat,
         root_path: Path,
+        block_cache: Option<Arc<BlockCache>>,
     ) -> Self {
         Self::new_with_fp_registry(
             object_store,
             sst_format,
             root_path,
             Arc::new(FailPointRegistry::new()),
+            block_cache,
         )
     }
 
@@ -79,6 +84,7 @@ impl TableStore {
         sst_format: SsTableFormat,
         root_path: Path,
         fp_registry: Arc<FailPointRegistry>,
+        block_cache: Option<Arc<BlockCache>>,
     ) -> Self {
         Self {
             object_store: object_store.clone(),
@@ -88,6 +94,7 @@ impl TableStore {
             compacted_path: "compacted",
             fp_registry,
             filter_cache: RwLock::new(HashMap::new()),
+            block_cache,
         }
     }
 
@@ -222,28 +229,44 @@ impl TableStore {
         handle: &SSTableHandle,
         blocks: Range<usize>,
     ) -> Result<VecDeque<Block>, SlateDBError> {
-        let path = self.path(&handle.id);
-        let obj = ReadOnlyObject {
-            object_store: self.object_store.clone(),
-            path,
-        };
-        self.sst_format
-            .read_blocks(&handle.info, blocks, &obj)
-            .await
+        let mut result = VecDeque::new();
+
+        for block_index in blocks {
+            let block = self.read_block(handle, block_index).await?;
+            result.push_back(block);
+        }
+
+        Ok(result)
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn read_block(
         &self,
         handle: &SSTableHandle,
-        block: usize,
+        block_index: usize,
     ) -> Result<Block, SlateDBError> {
+        if let Some(cache) = &self.block_cache {
+            if let Some(cached_block) = cache.get(&(handle.id.clone(), block_index)).await {
+                return Ok(cached_block.as_ref().clone());
+            }
+        }
+
         let path = self.path(&handle.id);
         let obj = ReadOnlyObject {
             object_store: self.object_store.clone(),
             path,
         };
-        self.sst_format.read_block(&handle.info, block, &obj).await
+        let block = self
+            .sst_format
+            .read_block(&handle.info, block_index, &obj)
+            .await?;
+
+        if let Some(cache) = &self.block_cache {
+            cache
+                .insert((handle.id.clone(), block_index), Arc::new(block.clone()))
+                .await;
+        }
+
+        Ok(block)
     }
 
     fn path(&self, id: &SsTableId) -> Path {
@@ -328,12 +351,12 @@ impl<'a> EncodedSsTableWriter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::db_state::SsTableId;
     use crate::sst::SsTableFormat;
     use crate::sst_iter::SstIterator;
     use crate::tablestore::TableStore;
     use crate::test_utils::assert_iterator;
     use crate::types::ValueDeletable;
+    use crate::{db_state::SsTableId, tablestore::BlockCache};
     use bytes::Bytes;
     use object_store::path::Path;
     use std::sync::Arc;
@@ -346,7 +369,14 @@ mod tests {
         // given:
         let os = Arc::new(object_store::memory::InMemory::new());
         let format = SsTableFormat::new(32, 1, None);
-        let ts = Arc::new(TableStore::new(os.clone(), format, Path::from(ROOT)));
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
+        let ts = Arc::new(TableStore::new(
+            os.clone(),
+            format,
+            Path::from(ROOT),
+            block_cache,
+        ));
         let id = SsTableId::Compacted(Ulid::new());
 
         // when:

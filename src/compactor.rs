@@ -260,7 +260,6 @@ impl CompactorOrchestrator {
 
 #[cfg(test)]
 mod tests {
-    use crate::compactor::{CompactorOptions, CompactorOrchestrator, WorkerToOrchestoratorMsg};
     use crate::compactor_state::{Compaction, SourceId};
     use crate::config::DbOptions;
     use crate::db::Db;
@@ -269,6 +268,10 @@ mod tests {
     use crate::sst::SsTableFormat;
     use crate::sst_iter::SstIterator;
     use crate::tablestore::TableStore;
+    use crate::{
+        compactor::{CompactorOptions, CompactorOrchestrator, WorkerToOrchestoratorMsg},
+        tablestore::BlockCache,
+    };
     use object_store::memory::InMemory;
     use object_store::path::Path;
     use object_store::ObjectStore;
@@ -336,6 +339,8 @@ mod tests {
         // write an l0
         let options = db_options(None);
         let rt = build_runtime();
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
         let (os, manifest_store, table_store, db) = rt.block_on(build_test_db(options.clone()));
         let mut stored_manifest = rt
             .block_on(StoredManifest::load(manifest_store.clone()))
@@ -365,6 +370,7 @@ mod tests {
                 Path::from(PATH),
                 options.clone(),
                 os.clone(),
+                block_cache,
             ))
             .unwrap();
         rt.block_on(db.put(&[b'j'; 32], &[b'k'; 96]));
@@ -431,12 +437,21 @@ mod tests {
         Db,
     ) {
         let os: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let db = Db::open_with_opts(Path::from(PATH), options.clone(), os.clone())
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
+        let db = Db::open_with_opts(Path::from(PATH), options.clone(), os.clone(), block_cache)
             .await
             .unwrap();
         let sst_format = SsTableFormat::new(32, 10, options.compression_codec);
         let manifest_store = Arc::new(ManifestStore::new(&Path::from(PATH), os.clone()));
-        let table_store = Arc::new(TableStore::new(os.clone(), sst_format, Path::from(PATH)));
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
+
+        let table_store = Arc::new(TableStore::new(
+            os.clone(),
+            sst_format,
+            Path::from(PATH),
+            block_cache,
+        ));
         (os, manifest_store, table_store, db)
     }
 
