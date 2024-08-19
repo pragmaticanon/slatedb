@@ -210,11 +210,11 @@ impl CompactorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compactor_state::CompactionStatus::Submitted, tablestore::BlockCache};
     use crate::compactor_state::SourceId::Sst;
     use crate::db::Db;
     use crate::db_state::SsTableId;
     use crate::manifest_store::{ManifestStore, StoredManifest};
+    use crate::{compactor_state::CompactionStatus::Submitted, tablestore::BlockCache};
     use object_store::memory::InMemory;
     use object_store::path::Path;
     use object_store::ObjectStore;
@@ -229,7 +229,8 @@ mod tests {
     fn test_should_register_compaction_as_submitted() {
         // given:
         let rt = build_runtime();
-        let (_, _, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
+        let (_, _, mut state) = build_test_state(rt.handle(), block_cache);
 
         // when:
         state
@@ -245,7 +246,8 @@ mod tests {
     fn test_should_update_dbstate_when_compaction_finished() {
         // given:
         let rt = build_runtime();
-        let (_, _, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
+        let (_, _, mut state) = build_test_state(rt.handle(), block_cache);
         let before_compaction = state.db_state().clone();
         let compaction = build_l0_compaction(&before_compaction.l0, 0);
         state.submit_compaction(compaction).unwrap();
@@ -312,7 +314,8 @@ mod tests {
     fn test_should_refresh_db_state_correctly_when_never_compacted() {
         // given:
         let rt = build_runtime();
-        let (os, mut sm, mut state) = build_test_state(rt.handle());
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
+        let (os, mut sm, mut state) = build_test_state(rt.handle(), block_cache);
         let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         // open a new db and write another l0
         let db = build_db(os.clone(), rt.handle(), block_cache);
@@ -345,7 +348,7 @@ mod tests {
         // given:
         let rt = build_runtime();
         let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
-        let (os, mut sm, mut state) = build_test_state(rt.handle(), block_cache);
+        let (os, mut sm, mut state) = build_test_state(rt.handle(), block_cache.clone());
         // compact the last sst
         let original_l0s = &state.db_state().clone().l0;
         state
@@ -400,7 +403,7 @@ mod tests {
         // given:
         let rt = build_runtime();
         let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
-        let (os, mut sm, mut state) = build_test_state(rt.handle(), block_cache);
+        let (os, mut sm, mut state) = build_test_state(rt.handle(), block_cache.clone());
         // compact the last sst
         let original_l0s = &state.db_state().clone().l0;
         state
@@ -504,7 +507,11 @@ mod tests {
         Compaction::new(sources, dst)
     }
 
-    fn build_db(os: Arc<dyn ObjectStore>, tokio_handle: &Handle, block_cache: Option<Arc<BlockCache>>) -> Db {
+    fn build_db(
+        os: Arc<dyn ObjectStore>,
+        tokio_handle: &Handle,
+        block_cache: Option<Arc<BlockCache>>,
+    ) -> Db {
         tokio_handle
             .block_on(Db::open(Path::from(PATH), os, block_cache))
             .unwrap()
@@ -512,7 +519,7 @@ mod tests {
 
     fn build_test_state(
         tokio_handle: &Handle,
-        block_cache: Option<Arc<BlockCache>>
+        block_cache: Option<Arc<BlockCache>>,
     ) -> (Arc<dyn ObjectStore>, StoredManifest, CompactorState) {
         let os: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let db = build_db(os.clone(), tokio_handle, block_cache);
