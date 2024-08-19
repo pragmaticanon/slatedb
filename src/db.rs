@@ -170,23 +170,21 @@ impl DbInner {
             };
             let mut iter = SstIterator::new(&sst, self.table_store.clone(), 1, 1);
             // iterate over the WAL SSTs in reverse order to ensure we recover in write-order
+            // buffer the WAL entries to bulk replay them into the memtable.
+            let mut wal_replay_buf = Vec::new();
             while let Some(kv) = iter.next_entry().await? {
-                // TODO: it's not ideal that we have to take this lock for every kv. We can solve
-                //       this by either:
-                //       1. detaching this method from self and calling it before initializing
-                //          DbInner. The downside is we can't use member methods of DbInner
-                //          like maybe_freeze_wal
-                //       2. accumulating kv-pairs in memory and bulk-applying the writes
-                let mut guard = self.state.write();
-                match kv.value {
-                    ValueDeletable::Value(value) => {
-                        guard.memtable().put(kv.key.as_ref(), value.as_ref())
-                    }
-                    ValueDeletable::Tombstone => guard.memtable().delete(kv.key.as_ref()),
-                }
+                wal_replay_buf.push(kv);
             }
             {
                 let mut guard = self.state.write();
+                for kv in wal_replay_buf.iter() {
+                    match &kv.value {
+                        ValueDeletable::Value(value) => {
+                            guard.memtable().put(kv.key.as_ref(), value.as_ref())
+                        }
+                        ValueDeletable::Tombstone => guard.memtable().delete(kv.key.as_ref()),
+                    }
+                }
                 self.maybe_freeze_memtable(&mut guard, sst_id);
                 if guard.state().core.next_wal_sst_id == sst_id {
                     guard.increment_next_wal_id();
@@ -318,7 +316,6 @@ impl Db {
 
         // Tell the notifier thread to shut down.
         self.flush_notifier.send(()).ok();
-        self.inner.memtable_flush_notifier.send(Shutdown).ok();
 
         if let Some(flush_task) = {
             // Scope the flush_thread lock so its lock isn't held while awaiting the join
@@ -329,6 +326,9 @@ impl Db {
         } {
             flush_task.await.expect("Failed to join flush thread");
         }
+
+        // Tell the memtable flush thread to shut down.
+        self.inner.memtable_flush_notifier.send(Shutdown).ok();
 
         if let Some(memtable_flush_task) = {
             let mut memtable_flush_task = self.memtable_flush_task.lock();
@@ -385,8 +385,8 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CompactorOptions;
     use crate::sst_iter::SstIterator;
+    use crate::{config::CompactorOptions, tablestore::BlockCache};
     use object_store::memory::InMemory;
     use object_store::ObjectStore;
     use std::time::Duration;
@@ -394,8 +394,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_get_delete() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
@@ -422,8 +421,7 @@ mod tests {
     async fn test_put_flushes_memtable() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 128, None),
@@ -485,8 +483,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_empty_value() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
@@ -509,8 +506,7 @@ mod tests {
     #[tokio::test]
     async fn test_flush_while_iterating() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             Path::from("/tmp/test_kv_store"),
             test_db_options(0, 1024, None),
@@ -545,8 +541,7 @@ mod tests {
     async fn test_basic_restore() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 128, None),
@@ -581,7 +576,7 @@ mod tests {
             path.clone(),
             test_db_options(0, 128, None),
             object_store.clone(),
-            block_cache,
+            block_cache.clone(),
         )
         .await
         .unwrap();
@@ -609,8 +604,7 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
@@ -649,8 +643,7 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
@@ -692,8 +685,7 @@ mod tests {
         let fp_registry = Arc::new(FailPointRegistry::new());
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let kv_store = Db::open_with_opts(
             path.clone(),
             test_db_options(0, 1024, None),
@@ -729,8 +721,6 @@ mod tests {
     #[tokio::test]
     async fn test_should_recover_imm_from_wal() {
         let fp_registry = Arc::new(FailPointRegistry::new());
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
         fail_parallel::cfg(
             fp_registry.clone(),
             "write-compacted-sst-io-error",
@@ -740,6 +730,7 @@ mod tests {
 
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let db = Db::open_with_fp_registry(
             path.clone(),
             test_db_options(0, 128, None),
@@ -792,8 +783,7 @@ mod tests {
     async fn do_test_should_read_compacted_db(options: DbOptions) {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let path = Path::from("/tmp/test_kv_store");
-        let block_cache = Some(Arc::new(BlockCache::new(1 << 30))); // 1GB block cache,
-
+        let block_cache = Some(Arc::new(BlockCache::new(1 << 30)));
         let db = Db::open_with_opts(path.clone(), options, object_store.clone(), block_cache)
             .await
             .unwrap();
