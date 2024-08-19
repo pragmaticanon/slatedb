@@ -1,8 +1,11 @@
-use crate::block::Block;
-use crate::db_state::{SSTableHandle, SsTableId};
 use crate::error::SlateDBError;
 use crate::filter::BloomFilter;
 use crate::sst::{EncodedSsTable, EncodedSsTableBuilder, SsTableFormat};
+use crate::{
+    blob::ReadOnlyBlob,
+    db_state::{SSTableHandle, SsTableId},
+};
+use crate::{block::Block, config::CompressionCodec};
 use bytes::{BufMut, Bytes};
 use fail_parallel::{fail_point, FailPointRegistry};
 use futures::StreamExt;
@@ -14,6 +17,8 @@ use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+
+pub type BlockCache = moka::future::Cache<(SsTableId, usize), Arc<Block>>;
 
 pub struct TableStore {
     object_store: Arc<dyn ObjectStore>,
