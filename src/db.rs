@@ -279,7 +279,6 @@ impl Db {
                     table_store.clone(),
                     compactor_options.clone(),
                     Handle::current(),
-                    options.compression_codec,
                 )
                 .await?,
             )
