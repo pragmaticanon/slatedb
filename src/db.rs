@@ -35,6 +35,7 @@ pub(crate) struct DbInner {
     pub(crate) table_store: Arc<TableStore>,
     pub(crate) memtable_flush_notifier: tokio::sync::mpsc::UnboundedSender<MemtableFlushThreadMsg>,
     pub(crate) db_stats: Arc<DbStats>,
+    pub(crate) manifest_store: Arc<ManifestStore>,
 }
 
 impl DbInner {
@@ -44,6 +45,7 @@ impl DbInner {
         core_db_state: CoreDbState,
         memtable_flush_notifier: tokio::sync::mpsc::UnboundedSender<MemtableFlushThreadMsg>,
         db_stats: Arc<DbStats>,
+        manifest_store: Arc<ManifestStore>,
     ) -> Result<Self, SlateDBError> {
         let state = DbState::new(core_db_state);
         let db_inner = Self {
@@ -52,6 +54,7 @@ impl DbInner {
             table_store,
             memtable_flush_notifier,
             db_stats,
+            manifest_store,
         };
         Ok(db_inner)
     }
@@ -62,7 +65,18 @@ impl DbInner {
         key: &[u8],
         options: &ReadOptions,
     ) -> Result<Option<Bytes>, SlateDBError> {
-        let snapshot = self.state.read().snapshot();
+        let snapshot = if let Some(s) = options.snapshot {
+            self.manifest_store
+                .read_manifest_with_id(s.manifest_id)
+                .await?
+                .unwrap()
+                .core
+                .snapshot()
+        } else {
+            self.state.read().snapshot()
+        };
+
+        // self.state.read().snapshot();
 
         if matches!(options.read_level, Uncommitted) {
             let maybe_bytes = std::iter::once(snapshot.wal)
@@ -388,6 +402,7 @@ impl Db {
                 manifest.db_state()?.clone(),
                 memtable_flush_tx,
                 db_stats,
+                manifest_store.clone(),
             )
             .await?,
         );
@@ -1050,6 +1065,7 @@ mod tests {
                 "foo".as_bytes(),
                 &ReadOptions {
                     read_level: Uncommitted,
+                    snapshot: None,
                 },
             )
             .await
@@ -1092,6 +1108,7 @@ mod tests {
                 "foo".as_bytes(),
                 &ReadOptions {
                     read_level: Uncommitted,
+                    snapshot: None,
                 },
             )
             .await
@@ -1133,6 +1150,7 @@ mod tests {
                 "foo".as_bytes(),
                 &ReadOptions {
                     read_level: Uncommitted,
+                    snapshot: None,
                 },
             )
             .await
