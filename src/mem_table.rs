@@ -10,6 +10,7 @@ use crate::error::SlateDBError;
 use crate::iter::KeyValueIterator;
 use crate::types::{KeyValueDeletable, ValueDeletable};
 
+#[derive(Default)]
 pub(crate) struct KVTable {
     map: SkipMap<Bytes, ValueDeletable>,
     durable_notify: Arc<Notify>,
@@ -135,7 +136,7 @@ impl WritableKVTable {
 }
 
 impl KVTable {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             map: SkipMap::new(),
             durable_notify: Arc::new(Notify::new()),

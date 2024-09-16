@@ -144,18 +144,17 @@ impl CoreDbState {
 
     pub(crate) fn snapshot(&self) -> DbStateSnapshot {
         DbStateSnapshot {
-            memtable: Arc::new(KVTable::new()),
-            wal: Arc::new(KVTable::new()),
             state: Arc::new(COWDbState {
                 core: self.clone(),
                 ..Default::default()
             }),
+            ..Default::default()
         }
     }
 }
 
 // represents a read-snapshot of the current db state
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct DbStateSnapshot {
     pub(crate) memtable: Arc<KVTable>,
     pub(crate) wal: Arc<KVTable>,
