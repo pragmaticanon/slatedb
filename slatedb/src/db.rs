@@ -1932,6 +1932,7 @@ mod tests {
                         poll_interval: Duration::from_millis(100),
                         max_sst_size: 256,
                         max_concurrent_compactions: 1,
+                        manifest_update_timeout: Duration::from_secs(300),
                     }),
                 ))
                 .with_compaction_scheduler_supplier(compaction_scheduler)
@@ -2867,6 +2868,7 @@ mod tests {
                 poll_interval: Duration::from_millis(100),
                 max_sst_size: 256,
                 max_concurrent_compactions: 1,
+                manifest_update_timeout: Duration::from_secs(300),
             }),
         ))
         .await;
@@ -2879,6 +2881,7 @@ mod tests {
             127,
             Some(CompactorOptions {
                 poll_interval: Duration::from_millis(100),
+                manifest_update_timeout: Duration::from_secs(300),
                 max_sst_size: 256,
                 max_concurrent_compactions: 1,
             }),
